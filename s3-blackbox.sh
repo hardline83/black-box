@@ -8,7 +8,7 @@ OBS_CONFIG_FILE="$HOME/.obsutilconfig"
 COMPRESS_LEVEL=6
 MAX_RETRIES=3
 TMP_DIR="./tmp"
-CHUNK_SIZE="50GB"
+CHUNK_SIZE="50G"
 
 # Telegram Notifications
 TG_BOT_TOKEN="6735752447:AAFyoJcKxorLSdqaJbs73IV-fY28TJMIA4Y"
@@ -274,11 +274,18 @@ main() {
 
     local file_size=$(get_size "$ENCRYPTED_FILE")
     local chunk_size_bytes=$(convert_to_bytes "$CHUNK_SIZE")
+    #local chunk_size_bytes=$CHUNK_SIZE
+    #log "echo file_size=$file_size"
+    #log "echo chunk_size_bytes=$CHUNK_SIZE"
+    #log "echo chunk_size_bytes=$(convert_to_bytes "$CHUNK_SIZE")"
 
     if [ "$file_size" -gt "$chunk_size_bytes" ]; then
         log "🔍 Размер файла превышает $CHUNK_SIZE ($(numfmt --to=iec $file_size)), начинаем разбиение..."
         split_large_file "$ENCRYPTED_FILE" "$CHUNK_SIZE" "$PART_PREFIX"
+    else
+        log "ℹ️ Размер файла не превышает $CHUNK_SIZE, выгружаю как есть"
     fi
+
 
     # Загружаем все содержимое временной директории
     upload_all_to_obs
