@@ -7,9 +7,6 @@ OBS_BUCKET="black-box"
 OBS_CONFIG_FILE="$HOME/.obsutilconfig"
 MAX_RETRIES=3
 LOCAL_DIR="/backup-data/S3-1"
-TG_BOT_TOKEN="6735752447:AAFyoJcKxorLSdqaJbs73IV-fY28TJMIA4Y"
-TG_CHAT_ID="816382525"
-TG_API_URL="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
 HOSTNAME=$(hostname)
 TIMESTAMP=$(date +%Y%m%d)
 LOG_FILE="/var/log/obs_sync_${TIMESTAMP}.log"
@@ -20,17 +17,13 @@ log() {
     echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] ${message}" | tee -a "$LOG_FILE"
 }
 
-send_telegram() {
-    local message="$1"
-    curl -s -X POST "$TG_API_URL" \
-        -d chat_id="$TG_CHAT_ID" \
-        -d text="$message" \
-        -d parse_mode="Markdown" >/dev/null 2>&1
-}
-
 format_duration() {
     local seconds=${1%.*}
     printf "%02dч %02dм %02dс" $((seconds/3600)) $(( (seconds%3600)/60 )) $((seconds%60))
+}
+
+format_bytes() {
+    numfmt --to=iec --suffix=B "$1"
 }
 
 check_deps() {
@@ -43,31 +36,40 @@ check_deps() {
 
     if [ ${#missing[@]} -gt 0 ]; then
         log "❌ Отсутствуют зависимости: ${missing[*]}"
-        send_telegram "*🚫 Ошибка синхронизации*
-*Хост:* \`${HOSTNAME}\`
-*Проблема:* Отсутствуют зависимости - ${missing[*]}"
         exit 1
     fi
     log "✅ Все зависимости доступны"
 
     if [ ! -f "$OBS_CONFIG_FILE" ]; then
         log "❌ Конфигурационный файл obsutil не найден: $OBS_CONFIG_FILE"
-        send_telegram "*🚫 Ошибка синхронизации*
-*Хост:* \`${HOSTNAME}\`
-*Проблема:* Отсутствует конфиг obsutil"
         exit 1
     fi
 }
 
 check_disk_space() {
-    local needed=$(df -k "$LOCAL_DIR" | awk 'NR==2 {print $4}')
-    if [ "$needed" -lt 1048576 ]; then  # 1GB minimum
-        log "❌ Недостаточно места в $LOCAL_DIR. Доступно: $(numfmt --to=iec ${needed}K)"
-        send_telegram "*🚫 Ошибка синхронизации*
-*Хост:* \`${HOSTNAME}\`
-*Проблема:* Менее 1GB свободного места в $LOCAL_DIR"
+    log "🔍 Проверка места на диске и размера бакета"
+    
+    local bucket_size_bytes=$(obsutil stat "obs://${OBS_BUCKET}" -config="$OBS_CONFIG_FILE" | awk '/^Size:/ {print $2}')
+    
+    if [ -z "$bucket_size_bytes" ] || [ "$bucket_size_bytes" -eq 0 ]; then
+        log "⚠️ Не удалось получить размер бакета или бакет пуст"
+        bucket_size_bytes=0
+    fi
+    
+    local available_space_bytes=$(df -k --output=avail "$LOCAL_DIR" | awk 'NR==2 {print $1 * 1024}')
+    local required_space=$((bucket_size_bytes * 11 / 10))
+    
+    log "📊 Статистика:"
+    log "• Размер бакета: $(format_bytes "$bucket_size_bytes")"
+    log "• Требуется места (с запасом 10%): $(format_bytes "$required_space")"
+    log "• Доступно места: $(format_bytes "$available_space_bytes")"
+    
+    if [ "$available_space_bytes" -lt "$required_space" ]; then
+        log "❌ Недостаточно места в $LOCAL_DIR. Требуется: $(format_bytes "$required_space"), доступно: $(format_bytes "$available_space_bytes")"
         exit 1
     fi
+    
+    log "✅ Достаточно места для синхронизации"
 }
 
 sync_obs_to_local() {
@@ -75,10 +77,6 @@ sync_obs_to_local() {
     local success=false
 
     log "🔄 Начало синхронизации obs://${OBS_BUCKET} -> ${LOCAL_DIR}"
-    send_telegram "*🔄 Начата синхронизация OBS*
-*Хост:* \`${HOSTNAME}\`
-*Источник:* \`obs://${OBS_BUCKET}\`
-*Назначение:* \`${LOCAL_DIR}\`"
 
     while [ $attempt -lt $MAX_RETRIES ] && [ "$success" = false ]; do
         ((attempt++))
@@ -102,11 +100,6 @@ sync_obs_to_local() {
 
     if [ "$success" = false ]; then
         log "❌ Не удалось выполнить синхронизацию после $MAX_RETRIES попыток"
-        send_telegram "*🚫 Ошибка синхронизации*
-*Хост:* \`${HOSTNAME}\`
-*Источник:* \`obs://${OBS_BUCKET}\`
-*Назначение:* \`${LOCAL_DIR}\`
-*Попыток:* $MAX_RETRIES"
         return 1
     fi
 
@@ -126,16 +119,7 @@ calculate_stats() {
     local sync_time_end=$(date +%s.%N)
     local sync_dur=$(echo "$sync_time_end - $sync_time_start" | bc -l 2>/dev/null || echo 0)
 
-    local tg_message="*✅ Синхронизация OBS завершена*
-*Хост:* \`${HOSTNAME}\`
-*Источник:* \`obs://${OBS_BUCKET}\`
-*Назначение:* \`${LOCAL_DIR}\`
-*Общее время:* \`$(format_duration "$sync_dur")\`
-*Всего файлов:* \`$total_files\`
-*Общий размер:* \`$total_size\`
-*Лог-файл:* \`${LOG_FILE}\`"
-
-    send_telegram "$tg_message"
+    log "⏱️ Общее время синхронизации: $(format_duration "$sync_dur")"
 }
 
 # ==================== ОСНОВНОЙ ПРОЦЕСС ====================
@@ -167,10 +151,6 @@ main() {
 
 if ! main; then
     log "❌ Критическая ошибка! Скрипт завершен с ошибкой."
-    send_telegram "*🚫 Синхронизация OBS завершена с ошибкой*
-*Хост:* \`${HOSTNAME}\`
-*Источник:* \`obs://${OBS_BUCKET}\`
-*Лог-файл:* \`${LOG_FILE}\`"
     exit 1
 fi
 
