@@ -2,18 +2,20 @@
 set -euo pipefail
 total_time_start=$(date +%s.%N)
 
+# ==================== ВХОДНЫЕ ДАННЫЕ ====================
+SOURCE="./dump_archive/creatio_pp-$(date -d "yesterday" +%Y-%m-%d).bac" # Заменить префикс резервной копии, в этом строке "creatio_pp"
+HOSTNAME="itsm-t-dba01"                                                 # Указать имя сервера БД на котором работает БД, подсмотреть в скрипте РК
+
 # ==================== КОНФИГУРАЦИЯ ====================
-OBS_BUCKET="black-box"
-OBS_CONFIG_FILE="$HOME/.obsutilconfig"
-COMPRESS_LEVEL=6
-MAX_RETRIES=3
-TMP_DIR="./tmp"
+OBS_BUCKET="black-box"                      # Имя бакета в тенанте sberservice_infra_s3
+OBS_CONFIG_FILE="$HOME/.obsutilconfig"      # Указать путь к конфигурации obsutil
+COMPRESS_LEVEL=6                            # Уровень сжатия для архива, выбран 6 по оптимальности скорости сжатия и размера
+MAX_RETRIES=3                               # Количество попыток выгрузки в S3
+TMP_DIR="./tmp"                             # Путь к временному каталогу, в котором РК архивируется и шифруется. Перед запуском скрипта и после отправки чистится
 CHUNK_SIZE="50G"
 
 # ==================== ИНИЦИАЛИЗАЦИЯ ====================
-SOURCE="./dump_archive/marketplace-$(date -d "yesterday" +%Y-%m-%d).bac"
-KEYFILE="./encryption.key"
-HOSTNAME="mp-p-dba01"
+KEYFILE="./encryption.key"                          # Путь к ключу openssl
 BACKUP_DATE=$(date +%Y-%m-%d)
 TIMESTAMP=$(date +%Y%m%d)
 BACKUP_NAME="backup_${HOSTNAME}_${TIMESTAMP}"
