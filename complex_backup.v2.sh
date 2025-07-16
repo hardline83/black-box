@@ -77,6 +77,16 @@ convert_to_bytes() {
     }' | tr -d '[:alpha:]'
 }
 
+prepare_directories() {
+    # Создаем необходимые каталоги, если они не существуют
+    mkdir -p "$DUMP_DIR" "$ARCHIVE_DIR" "$(dirname "$LOG_FILE")" "$TMP_DIR"
+    log "✅ Проверены/созданы необходимые каталоги:"
+    log "   - $DUMP_DIR"
+    log "   - $ARCHIVE_DIR"
+    log "   - $(dirname "$LOG_FILE")"
+    log "   - $TMP_DIR"
+}
+
 prepare_temp_dir() {
     if [ ! -d "$TMP_DIR" ]; then
         mkdir -p "$TMP_DIR"
@@ -85,8 +95,6 @@ prepare_temp_dir() {
         rm -rf "${TMP_DIR:?}/"*
         log "✅ Очищена временная директория: $TMP_DIR"
     fi
-
-    mkdir -p "$(dirname "$LOG_FILE")"
 }
 
 check_deps() {
@@ -289,6 +297,9 @@ main() {
             \?) log "❌ Неверный аргумент: -$OPTARG" >&2; exit 1 ;;
         esac
     done
+
+    # Создание необходимых каталогов перед началом работы
+    prepare_directories
 
     log "=== НАЧАЛО РЕЗЕРВНОГО КОПИРОВАНИЯ ==="
     log "🖥️ Хост БД: $DB_HOST"
