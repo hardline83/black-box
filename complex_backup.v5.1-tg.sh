@@ -109,9 +109,53 @@ send_telegram() {
         -d parse_mode="Markdown" >/dev/null 2>&1 || log "⚠️ Не удалось отправить сообщение в Telegram"
 }
 
+# Функции для работы со временем без использования восьмеричных чисел
+get_timestamp() {
+    date +%s.%N | tr -d '\n'
+}
+
+calculate_duration() {
+    local start=$1
+    local end=$2
+    
+    # Разделяем секунды и наносекунды
+    local start_sec=${start%.*}
+    local start_nsec=${start#*.}
+    local end_sec=${end%.*}
+    local end_nsec=${end#*.}
+    
+    # Удаляем ведущие нули, чтобы избежать интерпретации как восьмеричных чисел
+    start_sec=${start_sec#0}
+    start_nsec=${start_nsec#0}
+    end_sec=${end_sec#0}
+    end_nsec=${end_nsec#0}
+    
+    # Если значения пустые после удаления нулей, устанавливаем 0
+    start_sec=${start_sec:-0}
+    start_nsec=${start_nsec:-0}
+    end_sec=${end_sec:-0}
+    end_nsec=${end_nsec:-0}
+    
+    # Вычисляем разницу в секундах и наносекундах
+    local sec_diff=$((end_sec - start_sec))
+    local nsec_diff=$((end_nsec - start_nsec))
+    
+    # Корректируем, если наносекунды отрицательные
+    if [ "$nsec_diff" -lt 0 ]; then
+        nsec_diff=$((nsec_diff + 1000000000))
+        sec_diff=$((sec_diff - 1))
+    fi
+    
+    # Возвращаем только целые секунды
+    echo "$sec_diff"
+}
+
 format_duration() {
-    local seconds=${1:-0}  # Значение по умолчанию 0, если параметр не передан
-    printf "%02dч %02dм %02dс" $((seconds/3600)) $(( (seconds%3600)/60 )) $((seconds%60))
+    local total_seconds=${1:-0}
+    local hours=$((total_seconds / 3600))
+    local minutes=$(( (total_seconds % 3600) / 60 ))
+    local seconds=$((total_seconds % 60))
+    printf "%02dч %02dм %02dс" "$hours" "$minutes" "$seconds"
 }
 
 convert_to_bytes() {
@@ -128,14 +172,14 @@ convert_to_bytes() {
 
 check_db_connection() {
     log "\n=== ПРОВЕРКА ПОДКЛЮЧЕНИЯ К БД ==="
-    local check_start=$(date +%s.%N)
+    local check_start=$(get_timestamp)
     
     export PGPASSWORD
     log "🔄 Проверка подключения к БД ${DATABASE} на хосте ${DB_HOST}..."
     
     if psql -U "$DB_USER" -h "$DB_HOST" -p "$DB_PORT" -d "$DATABASE" -c "SELECT 1;" >/dev/null 2>>"${DUMP_DIR}/db_connection.log"; then
-        local check_end=$(date +%s.%N)
-        local check_dur=$(printf "%.0f" "$(echo "$check_end - $check_start" | bc)")
+        local check_end=$(get_timestamp)
+        local check_dur=$(calculate_duration "$check_start" "$check_end")
         log "✅ Подключение к БД успешно установлено за $(format_duration "$check_dur")"
         return 0
     else
@@ -154,13 +198,13 @@ check_db_connection() {
 
 check_s3_connection() {
     log "\n=== ПРОВЕРКА ПОДКЛЮЧЕНИЯ К OBS S3 ==="
-    local check_start=$(date +%s.%N)
+    local check_start=$(get_timestamp)
     
     log "🔄 Проверка подключения к OBS S3 (bucket: ${OBS_BUCKET})..."
     
     if obsutil ls "obs://${OBS_BUCKET}" -config="$OBS_CONFIG_FILE" >/dev/null 2>>"${TMP_DIR}/s3_connection.log"; then
-        local check_end=$(date +%s.%N)
-        local check_dur=$(printf "%.0f" "$(echo "$check_end - $check_start" | bc)")
+        local check_end=$(get_timestamp)
+        local check_dur=$(calculate_duration "$check_start" "$check_end")
         log "✅ Подключение к OBS S3 успешно установлено за $(format_duration "$check_dur")"
         log "ℹ️ Путь для загрузки: obs://${OBS_BUCKET}/${OBS_BASE_PATH}"
         return 0
@@ -255,7 +299,7 @@ clean_old_backups() {
     fi
 
     log "\n=== ПЕРЕНОС СТАРЫХ БЭКАПОВ ==="
-    local clean_start=$(date +%s.%N)
+    local clean_start=$(get_timestamp)
 
     # Перемещение текущего дампа в архив
     log "🔄 Перемещение текущего дампа в архив"
@@ -272,8 +316,8 @@ clean_old_backups() {
         log "🗑️ Удален: $file"
     done
 
-    local clean_end=$(date +%s.%N)
-    local clean_dur=$(printf "%.0f" "$(echo "$clean_end - $clean_start" | bc)")
+    local clean_end=$(get_timestamp)
+    local clean_dur=$(calculate_duration "$clean_start" "$clean_end")
     log "✅ Очистка завершена за $(format_duration "$clean_dur")"
 }
 
@@ -295,14 +339,14 @@ create_db_dump() {
     fi
 
     log "\n=== СОЗДАНИЕ ДАМПА БД ==="
-    local dump_start=$(date +%s.%N)
+    local dump_start=$(get_timestamp)
 
     log "🛡️ Начало создания дампа БД ${DATABASE} с хоста ${DB_HOST}"
     export PGPASSWORD
 
     if pg_dump -U "$DB_USER" "$DATABASE" -h "$DB_HOST" -p "$DB_PORT" > "$SOURCE_DUMP" 2>>"${DUMP_DIR}/pg_dump_error_mes.log"; then
-        local dump_end=$(date +%s.%N)
-        local dump_dur=$(printf "%.0f" "$(echo "$dump_end - $dump_start" | bc)")
+        local dump_end=$(get_timestamp)
+        local dump_dur=$(calculate_duration "$dump_start" "$dump_end")
         log "✅ Дамп БД успешно создан за $(format_duration "$dump_dur")"
         log "📊 Размер дампа: $(numfmt --to=iec "$(get_size "$SOURCE_DUMP")")"
     else
@@ -324,14 +368,14 @@ split_large_file() {
     local chunk_size="$2"
     local prefix="$3"
 
-    local split_start=$(date +%s.%N)
+    local split_start=$(get_timestamp)
     log "✂️ Начало разбиения файла на части по $chunk_size..."
 
     split -b "$chunk_size" --verbose "$input_file" "$prefix" 2>&1 | tee -a "$LOG_FILE"
     local exit_code=${PIPESTATUS[0]}
 
-    local split_end=$(date +%s.%N)
-    local split_dur=$(printf "%.0f" "$(echo "$split_end - $split_start" | bc)")
+    local split_end=$(get_timestamp)
+    local split_dur=$(calculate_duration "$split_start" "$split_end")
 
     if [ $exit_code -eq 0 ]; then
         log "✅ Файл успешно разбит за $(format_duration "$split_dur")"
@@ -360,14 +404,14 @@ upload_to_obs() {
 
     while [ $attempt -lt $MAX_RETRIES ]; do
         ((attempt++))
-        local upload_start=$(date +%s.%N)
+        local upload_start=$(get_timestamp)
         log "🔼 Попытка $attempt/$MAX_RETRIES: загрузка $(basename "$file") -> obs://${OBS_BUCKET}/${OBS_BASE_PATH}/${object_path}"
 
         if obsutil cp "$file" "obs://${OBS_BUCKET}/${OBS_BASE_PATH}/${object_path}" \
            -config="$OBS_CONFIG_FILE" >> "$LOG_FILE" 2>&1
         then
-            local upload_end=$(date +%s.%N)
-            upload_dur=$(printf "%.0f" "$(echo "$upload_end - $upload_start" | bc)")
+            local upload_end=$(get_timestamp)
+            upload_dur=$(calculate_duration "$upload_start" "$upload_end")
             log "✅ Успешно загружено за $(format_duration "$upload_dur")"
             log "🔗 Путь: obs://${OBS_BUCKET}/${OBS_BASE_PATH}/${object_path}"
             return 0
@@ -387,7 +431,7 @@ upload_to_obs() {
 }
 
 upload_all_to_obs() {
-    local upload_start=$(date +%s.%N)
+    local upload_start=$(get_timestamp)
     local files=("$TMP_DIR"/*)
     local total_files=${#files[@]}
     local uploaded_files=0
@@ -420,8 +464,8 @@ upload_all_to_obs() {
         log "⚠️ Не удалось загрузить лог-файл, но продолжаем выполнение"
     fi
 
-    local upload_end=$(date +%s.%N)
-    local upload_dur=$(printf "%.0f" "$(echo "$upload_end - $upload_start" | bc)")
+    local upload_end=$(get_timestamp)
+    local upload_dur=$(calculate_duration "$upload_start" "$upload_end")
     log "✅ Загружено $uploaded_files/$total_files файлов за $(format_duration "$upload_dur")"
 }
 
@@ -484,13 +528,13 @@ main() {
 
     # 3. Сжатие
     log "\n=== СЖАТИЕ ==="
-    local compress_start=$(date +%s.%N)
+    local compress_start=$(get_timestamp)
 
     log "🔹 Сжатие файла..."
     pigz -$COMPRESS_LEVEL -k -c "$SOURCE" > "$ARCHIVE_FILE"
 
-    local compress_end=$(date +%s.%N)
-    local compress_dur=$(printf "%.0f" "$(echo "$compress_end - $compress_start" | bc)")
+    local compress_end=$(get_timestamp)
+    local compress_dur=$(calculate_duration "$compress_start" "$compress_end")
     local compressed_size=$(get_size "$ARCHIVE_FILE")
 
     log "✅ Сжатие завершено за $(format_duration "$compress_dur")"
@@ -498,7 +542,7 @@ main() {
 
     # 4. Шифрование
     log "\n=== ШИФРОВАНИЕ ==="
-    local encrypt_start=$(date +%s.%N)
+    local encrypt_start=$(get_timestamp)
 
     log "🔒 Шифрование с помощью AES-256-CBC..."
     openssl enc -aes-256-cbc -salt -pbkdf2 \
@@ -506,8 +550,8 @@ main() {
         -out "$ENCRYPTED_FILE" \
         -pass file:"$KEYFILE"
 
-    local encrypt_end=$(date +%s.%N)
-    local encrypt_dur=$(printf "%.0f" "$(echo "$encrypt_end - $encrypt_start" | bc)")
+    local encrypt_end=$(get_timestamp)
+    local encrypt_dur=$(calculate_duration "$encrypt_start" "$encrypt_end")
 
     log "✅ Шифрование завершено за $(format_duration "$encrypt_dur")"
     log "📦 Размер зашифрованного файла: $(numfmt --to=iec "$(get_size "$ENCRYPTED_FILE")")"
@@ -536,8 +580,8 @@ main() {
     log "✅ Временные файлы удалены"
 
     # Итоговая информация
-    total_time_end=$(date +%s.%N)
-    total_dur=$(printf "%.0f" "$(echo "$total_time_end - $total_time_start" | bc)")
+    total_time_end=$(get_timestamp)
+    local total_dur=$(calculate_duration "$total_time_start" "$total_time_end")
     log "\n=== СВОДКА ==="
     log "⏳ Общее время выполнения: $(format_duration "$total_dur")"
     log "🗃️ Коэффициент сжатия: $(echo "scale=2; $(get_size "$SOURCE")/$compressed_size" | bc)x)"
