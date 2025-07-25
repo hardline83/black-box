@@ -4,7 +4,7 @@ total_time_start=$(date +%s.%N)
 
 # ИНСТРУКЦИЯ ПО ИСПОЛЬЗОВАНИЮ:
 # Обязательный аргумент:
-# -c <путь>  Полный путь к config.sh (например: /etc/backup/configs/db_prod_config.sh)
+# -c <путь>  Полный путь к config.sh (например: /backup-data/db-prod/db_prod_config.sh)
 #
 # Флаги для пропуска этапов:
 # -s  Пропустить создание дампа БД (будет использован существующий файл)
@@ -72,7 +72,7 @@ CHUNK_SIZE="50G"
 KEYFILE="$HOME/encryption.key"
 
 # Применяем кастомные пути или используем значения по умолчанию
-DUMP_DIR="${CUSTOM_DUMP_DIR:-${SCRIPT_DIR}/dump"
+DUMP_DIR="${CUSTOM_DUMP_DIR:-${SCRIPT_DIR}/dump}"
 ARCHIVE_DIR="${CUSTOM_ARCHIVE_DIR:-${SCRIPT_DIR}/dump_archive}"
 OBS_BASE_PATH="${CUSTOM_OBS_PATH:-DB/${DB_HOST}}"
 
@@ -97,8 +97,7 @@ SOURCE="${ARCHIVE_DIR}/${DATABASE}-${BACKUP_DATE}.bac"
 
 # ==================== ФУНКЦИИ ====================
 log() {
-    local message
-    message="$*"
+    local message="$*"
     echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] ${message}" | tee -a "$LOG_FILE"
 }
 
@@ -107,11 +106,11 @@ send_telegram() {
     curl -s -X POST "$TG_API_URL" \
         -d chat_id="$TG_CHAT_ID" \
         -d text="$message" \
-        -d parse_mode="Markdown" >/dev/null
+        -d parse_mode="Markdown" >/dev/null 2>&1 || log "⚠️ Не удалось отправить сообщение в Telegram"
 }
 
 format_duration() {
-    local seconds=$1
+    local seconds=${1:-0}  # Значение по умолчанию 0, если параметр не передан
     printf "%02dч %02dм %02dс" $((seconds/3600)) $(( (seconds%3600)/60 )) $((seconds%60))
 }
 
@@ -136,16 +135,16 @@ check_db_connection() {
     
     if psql -U "$DB_USER" -h "$DB_HOST" -p "$DB_PORT" -d "$DATABASE" -c "SELECT 1;" >/dev/null 2>>"${DUMP_DIR}/db_connection.log"; then
         local check_end=$(date +%s.%N)
-        local check_dur=$(echo "$check_end - $check_start" | bc)
-        log "✅ Подключение к БД успешно установлено за $(format_duration ${check_dur%.*})"
+        local check_dur=$(printf "%.0f" "$(echo "$check_end - $check_start" | bc)")
+        log "✅ Подключение к БД успешно установлено за $(format_duration "$check_dur")"
         return 0
     else
         log "❌ Ошибка подключения к БД (код $?)"
         log "⚠️ Подробности в ${DUMP_DIR}/db_connection.log"
         send_telegram "*🚫 Ошибка подключения к БД*
 *Сервер БД:* \`${DB_HOST}\`
-*Бекап сервер:* \`${HOSTNAME}\`
 *БД:* \`${DATABASE}\`
+*Бекап сервер:* \`${HOSTNAME}\`
 *Статус:* Проверка подключения не удалась"
         exit 1
     fi
@@ -161,8 +160,8 @@ check_s3_connection() {
     
     if obsutil ls "obs://${OBS_BUCKET}" -config="$OBS_CONFIG_FILE" >/dev/null 2>>"${TMP_DIR}/s3_connection.log"; then
         local check_end=$(date +%s.%N)
-        local check_dur=$(echo "$check_end - $check_start" | bc)
-        log "✅ Подключение к OBS S3 успешно установлено за $(format_duration ${check_dur%.*})"
+        local check_dur=$(printf "%.0f" "$(echo "$check_end - $check_start" | bc)")
+        log "✅ Подключение к OBS S3 успешно установлено за $(format_duration "$check_dur")"
         log "ℹ️ Путь для загрузки: obs://${OBS_BUCKET}/${OBS_BASE_PATH}"
         return 0
     else
@@ -200,7 +199,7 @@ prepare_temp_dir() {
 check_deps() {
     local missing=()
     for cmd in tar pigz openssl obsutil split pg_dump psql; do
-        if ! command -v $cmd &>/dev/null; then
+        if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
     done
@@ -226,16 +225,17 @@ check_deps() {
 }
 
 check_disk_space() {
-    local needed=$(($(get_size "$SOURCE") /2 / 1024))
+    local source_size=$(get_size "$SOURCE" 2>/dev/null || echo 0)
+    local needed=$((source_size / 2 / 1024))
     local available=$(df -k "$TMP_DIR" | awk 'NR==2 {print $4}')
 
     if [ "$available" -lt "$needed" ]; then
-        log "❌ Недостаточно места в $TMP_DIR. Нужно: $(numfmt --to=iec ${needed}K), доступно: $(numfmt --to=iec ${available}K)"
+        log "❌ Недостаточно места в $TMP_DIR. Нужно: $(numfmt --to=iec "${needed}K"), доступно: $(numfmt --to=iec "${available}K")"
         send_telegram "*🚫 Ошибка резервного копирования*
 *Сервер БД:* \`${DB_HOST}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Проблема:* Недостаточно места в $TMP_DIR
-Требуется: $(numfmt --to=iec ${needed}K), Доступно: $(numfmt --to=iec ${available}K)"
+Требуется: $(numfmt --to=iec "${needed}K"), Доступно: $(numfmt --to=iec "${available}K")"
         exit 1
     fi
 }
@@ -244,7 +244,7 @@ get_size() {
     if [ -d "$1" ]; then
         du -sb "$1" | awk '{print $1}'
     else
-        stat -c %s "$1"
+        stat -c %s "$1" 2>/dev/null || echo 0
     fi
 }
 
@@ -273,8 +273,8 @@ clean_old_backups() {
     done
 
     local clean_end=$(date +%s.%N)
-    local clean_dur=$(echo "$clean_end - $clean_start" | bc)
-    log "✅ Очистка завершена за $(format_duration ${clean_dur%.*})"
+    local clean_dur=$(printf "%.0f" "$(echo "$clean_end - $clean_start" | bc)")
+    log "✅ Очистка завершена за $(format_duration "$clean_dur")"
 }
 
 create_db_dump() {
@@ -302,16 +302,16 @@ create_db_dump() {
 
     if pg_dump -U "$DB_USER" "$DATABASE" -h "$DB_HOST" -p "$DB_PORT" > "$SOURCE_DUMP" 2>>"${DUMP_DIR}/pg_dump_error_mes.log"; then
         local dump_end=$(date +%s.%N)
-        local dump_dur=$(echo "$dump_end - $dump_start" | bc)
-        log "✅ Дамп БД успешно создан за $(format_duration ${dump_dur%.*})"
-        log "📊 Размер дампа: $(numfmt --to=iec $(get_size "$SOURCE_DUMP"))"
+        local dump_dur=$(printf "%.0f" "$(echo "$dump_end - $dump_start" | bc)")
+        log "✅ Дамп БД успешно создан за $(format_duration "$dump_dur")"
+        log "📊 Размер дампа: $(numfmt --to=iec "$(get_size "$SOURCE_DUMP")")"
     else
         log "❌ Ошибка при создании дампа БД (код $?)"
         log "⚠️ Подробности в ${DUMP_DIR}/pg_dump_error_mes.log"
         send_telegram "*🚫 Ошибка создания дампа БД*
 *Сервер БД:* \`${DB_HOST}\`
-*Бекап сервер:* \`${HOSTNAME}\`
 *БД:* \`${DATABASE}\`
+*Бекап сервер:* \`${HOSTNAME}\`
 *Статус:* Ошибка при создании дампа"
         exit 1
     fi
@@ -331,10 +331,10 @@ split_large_file() {
     local exit_code=${PIPESTATUS[0]}
 
     local split_end=$(date +%s.%N)
-    local split_dur=$(echo "$split_end - $split_start" | bc)
+    local split_dur=$(printf "%.0f" "$(echo "$split_end - $split_start" | bc)")
 
     if [ $exit_code -eq 0 ]; then
-        log "✅ Файл успешно разбит за $(format_duration ${split_dur%.*})"
+        log "✅ Файл успешно разбит за $(format_duration "$split_dur")"
         rm -f "$input_file"
         log "🧹 Удален исходный файл после разбиения: $(basename "$input_file")"
     else
@@ -354,8 +354,9 @@ upload_to_obs() {
     local file="$1"
     local object_path="${BACKUP_DATE}/$(basename "$file")"
     local attempt=0
+    local upload_dur=0
 
-    log "📤 Начало загрузки части: $(basename "$file") (размер: $(numfmt --to=iec $(get_size "$file")))"
+    log "📤 Начало загрузки части: $(basename "$file") (размер: $(numfmt --to=iec "$(get_size "$file")"))"
 
     while [ $attempt -lt $MAX_RETRIES ]; do
         ((attempt++))
@@ -366,8 +367,8 @@ upload_to_obs() {
            -config="$OBS_CONFIG_FILE" >> "$LOG_FILE" 2>&1
         then
             local upload_end=$(date +%s.%N)
-            local upload_dur=$(echo "$upload_end - $upload_start" | bc)
-            log "✅ Успешно загружено за $(format_duration ${upload_dur%.*})"
+            upload_dur=$(printf "%.0f" "$(echo "$upload_end - $upload_start" | bc)")
+            log "✅ Успешно загружено за $(format_duration "$upload_dur")"
             log "🔗 Путь: obs://${OBS_BUCKET}/${OBS_BASE_PATH}/${object_path}"
             return 0
         else
@@ -420,8 +421,8 @@ upload_all_to_obs() {
     fi
 
     local upload_end=$(date +%s.%N)
-    local upload_dur=$(echo "$upload_end - $upload_start" | bc)
-    log "✅ Загружено $uploaded_files/$total_files файлов за $(format_duration ${upload_dur%.*})"
+    local upload_dur=$(printf "%.0f" "$(echo "$upload_end - $upload_start" | bc)")
+    log "✅ Загружено $uploaded_files/$total_files файлов за $(format_duration "$upload_dur")"
 }
 
 # ==================== ОСНОВНОЙ ПРОЦЕСС ====================
@@ -444,8 +445,8 @@ main() {
 
     send_telegram "*🔹 Начато резервное копирование БД*
 *Сервер БД:* \`${DB_HOST}\`
-*Бекап сервер:* \`${HOSTNAME}\`
 *БД:* \`${DATABASE}\`
+*Бекап сервер:* \`${HOSTNAME}\`
 *Режим:* $($DRY_RUN && echo "Dry-run" || echo "Полный")
 *DUMP_DIR:* \`${DUMP_DIR}\`
 *ARCHIVE_DIR:* \`${ARCHIVE_DIR}\`
@@ -461,8 +462,8 @@ main() {
             log "Проверка подключения к БД и OBS S3 выполнена успешно. Скрипт завершает работу."
             send_telegram "*✅ Dry-run проверка завершена*
 *Сервер БД:* \`${DB_HOST}\`
-*Бекап сервер:* \`${HOSTNAME}\`
 *БД:* \`${DATABASE}\`
+*Бекап сервер:* \`${HOSTNAME}\`
 *Bucket:* \`${OBS_BUCKET}\`
 *OBS путь:* \`${OBS_BASE_PATH}\`
 *Статус:* Подключения успешны"
@@ -489,11 +490,11 @@ main() {
     pigz -$COMPRESS_LEVEL -k -c "$SOURCE" > "$ARCHIVE_FILE"
 
     local compress_end=$(date +%s.%N)
-    local compress_dur=$(echo "$compress_end - $compress_start" | bc)
+    local compress_dur=$(printf "%.0f" "$(echo "$compress_end - $compress_start" | bc)")
     local compressed_size=$(get_size "$ARCHIVE_FILE")
 
-    log "✅ Сжатие завершено за $(format_duration ${compress_dur%.*})"
-    log "📊 Результат: $(numfmt --to=iec $compressed_size) (коэф. $(echo "scale=2; $(get_size "$SOURCE")/$compressed_size" | bc)x)"
+    log "✅ Сжатие завершено за $(format_duration "$compress_dur")"
+    log "📊 Результат: $(numfmt --to=iec "$compressed_size") (коэф. $(echo "scale=2; $(get_size "$SOURCE")/$compressed_size" | bc)x)"
 
     # 4. Шифрование
     log "\n=== ШИФРОВАНИЕ ==="
@@ -506,10 +507,10 @@ main() {
         -pass file:"$KEYFILE"
 
     local encrypt_end=$(date +%s.%N)
-    local encrypt_dur=$(echo "$encrypt_end - $encrypt_start" | bc)
+    local encrypt_dur=$(printf "%.0f" "$(echo "$encrypt_end - $encrypt_start" | bc)")
 
-    log "✅ Шифрование завершено за $(format_duration ${encrypt_dur%.*})"
-    log "📦 Размер зашифрованного файла: $(numfmt --to=iec $(get_size "$ENCRYPTED_FILE"))"
+    log "✅ Шифрование завершено за $(format_duration "$encrypt_dur")"
+    log "📦 Размер зашифрованного файла: $(numfmt --to=iec "$(get_size "$ENCRYPTED_FILE")")"
 
     rm -f "$ARCHIVE_FILE"
     log "🧹 Удален временный архив: $(basename "$ARCHIVE_FILE")"
@@ -521,7 +522,7 @@ main() {
     local chunk_size_bytes=$(convert_to_bytes "$CHUNK_SIZE")
 
     if [ "$file_size" -gt "$chunk_size_bytes" ]; then
-        log "🔍 Размер файла превышает $CHUNK_SIZE ($(numfmt --to=iec $file_size)), начинаем разбиение..."
+        log "🔍 Размер файла превышает $CHUNK_SIZE ($(numfmt --to=iec "$file_size")), начинаем разбиение..."
         split_large_file "$ENCRYPTED_FILE" "$CHUNK_SIZE" "$PART_PREFIX"
     else
         log "ℹ️ Размер файла не превышает $CHUNK_SIZE, выгружаю как есть"
@@ -536,20 +537,20 @@ main() {
 
     # Итоговая информация
     total_time_end=$(date +%s.%N)
-    total_dur=$(echo "$total_time_end - $total_time_start" | bc)
+    total_dur=$(printf "%.0f" "$(echo "$total_time_end - $total_time_start" | bc)")
     log "\n=== СВОДКА ==="
-    log "⏳ Общее время выполнения: $(format_duration ${total_dur%.*})"
+    log "⏳ Общее время выполнения: $(format_duration "$total_dur")"
     log "🗃️ Коэффициент сжатия: $(echo "scale=2; $(get_size "$SOURCE")/$compressed_size" | bc)x)"
     log "📝 Лог-файл: $LOG_FILE"
 
     # Финальное сообщение в Telegram
     local tg_message="*✅ Резервное копирование успешно завершено*
 *Сервер БД:* \`${DB_HOST}\`
-*Бекап сервер:* \`${HOSTNAME}\`
 *БД:* \`${DATABASE}\`
-*Общее время:* \`$(format_duration ${total_dur%.*})\`
-*Исходный размер:* \`$(numfmt --to=iec $(get_size "$SOURCE"))\`
-*Сжатый размер:* \`$(numfmt --to=iec $compressed_size)\` (\`$(echo "scale=2; $(get_size "$SOURCE")/$compressed_size" | bc)x\`)
+*Бекап сервер:* \`${HOSTNAME}\`
+*Общее время:* \`$(format_duration "$total_dur")\`
+*Исходный размер:* \`$(numfmt --to=iec "$(get_size "$SOURCE")")\`
+*Сжатый размер:* \`$(numfmt --to=iec "$compressed_size")\` (\`$(echo "scale=2; $(get_size "$SOURCE")/$compressed_size" | bc)x\`)
 *Зашифрованный файл:* \`$(basename "$ENCRYPTED_FILE")\`
 *OBS путь:* \`${OBS_BASE_PATH}\`
 *Лог-файл:* \`${LOG_FILE}\`"
@@ -557,11 +558,11 @@ main() {
     send_telegram "$tg_message"
 
     log "\n=== СИСТЕМНАЯ ИНФОРМАЦИЯ ==="
-    log "ОС: $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
-    log "CPU: $(lscpu | grep 'Model name' | cut -d':' -f2 | xargs)"
-    log "RAM: $(free -h | awk '/Mem:/ {print $2}')"
+    log "ОС: $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2 || echo "Неизвестно")"
+    log "CPU: $(lscpu | grep 'Model name' | cut -d':' -f2 | xargs || echo "Неизвестно")"
+    log "RAM: $(free -h | awk '/Mem:/ {print $2}' || echo "Неизвестно")"
     log "Дисковое пространство:"
-    df -h | grep -v "tmpfs" | while read line; do log "$line"; done
+    df -h | grep -v "tmpfs" | while read -r line; do log "$line"; done || log "Не удалось получить информацию о дисках"
 
     log "\n=== РЕЗЕРВНОЕ КОПИРОВАНИЕ УСПЕШНО ЗАВЕРШЕНО ==="
 }
@@ -571,8 +572,8 @@ if ! main; then
     log "❌ Критическая ошибка! Скрипт завершен с ошибкой."
     send_telegram "*🚫 Резервное копирование завершено с ошибкой*
 *Сервер БД:* \`${DB_HOST}\`
-*Бекап сервер:* \`${HOSTNAME}\`
 *БД:* \`${DATABASE}\`
+*Бекап сервер:* \`${HOSTNAME}\`
 *Лог-файл:* \`${LOG_FILE}\`
 *Статус:* ❌ Критическая ошибка"
     exit 1
