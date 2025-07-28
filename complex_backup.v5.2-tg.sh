@@ -76,7 +76,7 @@ DUMP_DIR="${CUSTOM_DUMP_DIR:-${SCRIPT_DIR}/dump}"
 ARCHIVE_DIR="${CUSTOM_ARCHIVE_DIR:-${SCRIPT_DIR}/dump_archive}"
 OBS_BASE_PATH="${CUSTOM_OBS_PATH:-DB/${DB_HOST}}"
 
-RETENTION_DAYS=3
+RETENTION_DAYS=2
 
 # Telegram Notifications
 TG_BOT_TOKEN="7627195198:AAGD3W0IFbk4Ebn23Zfnd1BkgfTYHy_as5s"
@@ -294,7 +294,7 @@ check_disk_space() {
     
     # Получаем размер самого большого бэкапа в ARCHIVE_DIR
     local largest_backup=$(get_largest_backup_size "$ARCHIVE_DIR")
-    local needed_space=$((largest_backup * 2))  # Умножаем на 2 для запаса
+    local needed_space=$(echo "$largest_backup * 1.2" | bc | cut -d'.' -f1)  # Добавляем 20% запаса
     
     # Получаем доступное место на корневом разделе
     local available_space=$(df -k --output=avail "$root_mount_point" | awk 'NR==2 {print $1}')
@@ -303,7 +303,7 @@ check_disk_space() {
     log "\n=== ПРОВЕРКА ДИСКОВОГО ПРОСТРАНСТВА ==="
     log "📌 Корневой раздел: $root_partition (точка монтирования: $root_mount_point)"
     log "📊 Размер самого большого бэкапа: $(numfmt --to=iec "$largest_backup")"
-    log "🔍 Требуется места (с запасом): $(numfmt --to=iec "$needed_space")"
+    log "🔍 Требуется места (с запасом 20%): $(numfmt --to=iec "$needed_space")"
     log "💾 Доступно места: $(numfmt --to=iec "$available_space")"
     
     if [ "$available_space" -lt "$needed_space" ]; then
@@ -313,7 +313,7 @@ check_disk_space() {
 *Бекап сервер:* \`${HOSTNAME}\`
 *Проблема:* Недостаточно места на диске
 *Раздел:* \`$root_partition\` (\`$root_mount_point\`)
-*Требуется:* \`$(numfmt --to=iec "$needed_space")\`
+*Требуется:* \`$(numfmt --to=iec "$needed_space")\` (включая 20% запас)
 *Доступно:* \`$(numfmt --to=iec "$available_space")\`"
         exit 1
     fi
