@@ -83,6 +83,12 @@ TG_BOT_TOKEN="7627195198:AAGD3W0IFbk4Ebn23Zfnd1BkgfTYHy_as5s"
 TG_CHAT_ID="-1002682982923"
 TG_API_URL="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
 
+# Дополнительные настройки для уведомлений об ошибках
+TG_ERROR_BOT_TOKEN="6735752447:AAFyoJcKxorLSdqaJbs73IV-fY28TJMIA4Y"
+TG_ERROR_CHAT_ID="816382525"
+TG_ERROR_API_URL="https://api.telegram.org/bot${TG_ERROR_BOT_TOKEN}/sendMessage"
+TG_ERROR_MENTIONS="@user1 @user2"  # Контакты для упоминания в канале ошибок
+
 # ==================== ИНИЦИАЛИЗАЦИЯ ====================
 HOSTNAME=$(hostname)
 BACKUP_DATE=$(date +%Y-%m-%d)
@@ -107,6 +113,15 @@ send_telegram() {
         -d chat_id="$TG_CHAT_ID" \
         -d text="$message" \
         -d parse_mode="Markdown" >/dev/null 2>&1 || log "⚠️ Не удалось отправить сообщение в Telegram"
+}
+
+send_error_telegram() {
+    local message="$1"
+    local full_message="${TG_ERROR_MENTIONS}\n${message}"
+    curl -s -X POST "$TG_ERROR_API_URL" \
+        -d chat_id="$TG_ERROR_CHAT_ID" \
+        -d text="$full_message" \
+        -d parse_mode="Markdown" >/dev/null 2>&1 || log "⚠️ Не удалось отправить сообщение об ошибке в Telegram"
 }
 
 # Функции для работы со временем без использования восьмеричных чисел
@@ -185,11 +200,13 @@ check_db_connection() {
     else
         log "❌ Ошибка подключения к БД (код $?)"
         log "⚠️ Подробности в ${DUMP_DIR}/db_connection.log"
-        send_telegram "*🚫 Ошибка подключения к БД*
+        local error_msg="*🚫 Ошибка подключения к БД*
 *Сервер БД:* \`${DB_HOST}\`
 *БД:* \`${DATABASE}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Статус:* Проверка подключения не удалась"
+        send_telegram "$error_msg"
+        send_error_telegram "$error_msg"
         exit 1
     fi
     
@@ -211,11 +228,13 @@ check_s3_connection() {
     else
         log "❌ Ошибка подключения к OBS S3 (код $?)"
         log "⚠️ Подробности в ${TMP_DIR}/s3_connection.log"
-        send_telegram "*🚫 Ошибка подключения к OBS S3*
+        local error_msg="*🚫 Ошибка подключения к OBS S3*
 *Сервер БД:* \`${DB_HOST}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Bucket:* \`${OBS_BUCKET}\`
 *Статус:* Проверка подключения не удалась"
+        send_telegram "$error_msg"
+        send_error_telegram "$error_msg"
         exit 1
     fi
 }
@@ -250,20 +269,24 @@ check_deps() {
 
     if [ ${#missing[@]} -gt 0 ]; then
         log "❌ Отсутствуют зависимости: ${missing[*]}"
-        send_telegram "*🚫 Ошибка резервного копирования*
+        local error_msg="*🚫 Ошибка резервного копирования*
 *Сервер БД:* \`${DB_HOST}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Проблема:* Отсутствуют зависимости - ${missing[*]}"
+        send_telegram "$error_msg"
+        send_error_telegram "$error_msg"
         exit 1
     fi
     log "✅ Все зависимости доступны"
 
     if [ ! -f "$OBS_CONFIG_FILE" ]; then
         log "❌ Конфигурационный файл obsutil не найден: $OBS_CONFIG_FILE"
-        send_telegram "*🚫 Ошибка резервного копирования*
+        local error_msg="*🚫 Ошибка резервного копирования*
 *Сервер БД:* \`${DB_HOST}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Проблема:* Отсутствует конфиг obsutil"
+        send_telegram "$error_msg"
+        send_error_telegram "$error_msg"
         exit 1
     fi
 }
@@ -308,13 +331,15 @@ check_disk_space() {
     
     if [ "$available_space" -lt "$needed_space" ]; then
         log "❌ Недостаточно места на диске $root_partition. Нужно: $(numfmt --to=iec "$needed_space"), доступно: $(numfmt --to=iec "$available_space")"
-        send_telegram "*🚫 Ошибка резервного копирования*
+        local error_msg="*🚫 Ошибка резервного копирования*
 *Сервер БД:* \`${DB_HOST}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Проблема:* Недостаточно места на диске
 *Раздел:* \`$root_partition\` (\`$root_mount_point\`)
 *Требуется:* \`$(numfmt --to=iec "$needed_space")\` (включая 20% запас)
 *Доступно:* \`$(numfmt --to=iec "$available_space")\`"
+        send_telegram "$error_msg"
+        send_error_telegram "$error_msg"
         exit 1
     fi
     
@@ -364,10 +389,12 @@ create_db_dump() {
         
         if [ ! -f "$SOURCE_DUMP" ]; then
             log "❌ Файл дампа не найден: $SOURCE_DUMP"
-            send_telegram "*🚫 Ошибка резервного копирования*
+            local error_msg="*🚫 Ошибка резервного копирования*
 *Сервер БД:* \`${DB_HOST}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Проблема:* Файл дампа не найден: $SOURCE_DUMP"
+            send_telegram "$error_msg"
+            send_error_telegram "$error_msg"
             exit 1
         fi
         
@@ -389,11 +416,13 @@ create_db_dump() {
     else
         log "❌ Ошибка при создании дампа БД (код $?)"
         log "⚠️ Подробности в ${DUMP_DIR}/pg_dump_error_mes.log"
-        send_telegram "*🚫 Ошибка создания дампа БД*
+        local error_msg="*🚫 Ошибка создания дампа БД*
 *Сервер БД:* \`${DB_HOST}\`
 *БД:* \`${DATABASE}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Статус:* Ошибка при создании дампа"
+        send_telegram "$error_msg"
+        send_error_telegram "$error_msg"
         exit 1
     fi
 
@@ -420,11 +449,13 @@ split_large_file() {
         log "🧹 Удален исходный файл после разбиения: $(basename "$input_file")"
     else
         log "❌ Ошибка разбиения файла (код $exit_code)"
-        send_telegram "*🚫 Ошибка резервного копирования*
+        local error_msg="*🚫 Ошибка резервного копирования*
 *Сервер БД:* \`${DB_HOST}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Проблема:* Ошибка разбиения файла
 Код ошибки: $exit_code"
+        send_telegram "$error_msg"
+        send_error_telegram "$error_msg"
         exit 1
     fi
 
@@ -459,11 +490,13 @@ upload_to_obs() {
     done
 
     log "❌ Не удалось загрузить часть $(basename "$file") после $MAX_RETRIES попыток"
-    send_telegram "*⚠️ Проблема при загрузке в OBS*
+    local error_msg="*⚠️ Проблема при загрузке в OBS*
 *Сервер БД:* \`${DB_HOST}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Файл:* \`$(basename "$file")\`
 *Попыток:* $MAX_RETRIES"
+    send_telegram "$error_msg"
+    send_error_telegram "$error_msg"
     return 1
 }
 
@@ -485,11 +518,13 @@ upload_all_to_obs() {
             rm -f "$file"
             log "🧹 Удален временный файл: $(basename "$file")"
         else
-            send_telegram "*🚫 Критическая ошибка загрузки*
+            local error_msg="*🚫 Критическая ошибка загрузки*
 *Сервер БД:* \`${DB_HOST}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Файл:* \`$(basename "$file")\`
 *Статус:* Прерывание выполнения"
+            send_telegram "$error_msg"
+            send_error_telegram "$error_msg"
             exit 1
         fi
     done
@@ -664,12 +699,14 @@ main() {
 # Запуск основного процесса
 if ! main; then
     log "❌ Критическая ошибка! Скрипт завершен с ошибкой."
-    send_telegram "*🚫 Резервное копирование завершено с ошибкой*
+    local error_msg="*🚫 Резервное копирование завершено с ошибкой*
 *Сервер БД:* \`${DB_HOST}\`
 *БД:* \`${DATABASE}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Лог-файл:* \`${LOG_FILE}\`
 *Статус:* ❌ Критическая ошибка"
+    send_telegram "$error_msg"
+    send_error_telegram "$error_msg"
     exit 1
 fi
 
