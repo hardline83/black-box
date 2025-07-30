@@ -84,10 +84,10 @@ TG_CHAT_ID="-1002682982923"
 TG_API_URL="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
 
 # Дополнительные настройки для уведомлений об ошибках
-TG_ERROR_BOT_TOKEN="6735752447:AAFyoJcKxorLSdqaJbs73IV-fY28TJMIA4Y"
-TG_ERROR_CHAT_ID="816382525"
+TG_ERROR_BOT_TOKEN="5049784721:AAFN9Xp6M8MEB0tQSQuwHmUV0V45fJCMVbY"
+TG_ERROR_CHAT_ID="-1001525854112"
 TG_ERROR_API_URL="https://api.telegram.org/bot${TG_ERROR_BOT_TOKEN}/sendMessage"
-TG_ERROR_MENTIONS="@user1 @user2"  # Контакты для упоминания в канале ошибок
+TG_ERROR_MENTIONS="@Nnimeni @pac1ficus"  # Контакты для упоминания в канале ошибок
 
 # ==================== ИНИЦИАЛИЗАЦИЯ ====================
 HOSTNAME=$(hostname)
@@ -117,7 +117,8 @@ send_telegram() {
 
 send_error_telegram() {
     local message="$1"
-    local full_message="${TG_ERROR_MENTIONS}\n${message}"
+    local full_message="${message}
+${TG_ERROR_MENTIONS}"
     curl -s -X POST "$TG_ERROR_API_URL" \
         -d chat_id="$TG_ERROR_CHAT_ID" \
         -d text="$full_message" \
