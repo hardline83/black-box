@@ -400,6 +400,7 @@ create_db_dump() {
         fi
         
         log "ℹ️ Используется существующий дамп: $SOURCE_DUMP"
+        log "📊 Размер существующего дампа: $(numfmt --to=iec "$(get_size "$SOURCE_DUMP")")"
         return 0
     fi
 
@@ -409,44 +410,51 @@ create_db_dump() {
     log "🛡️ Начало создания дампа БД ${DATABASE} с хоста ${DB_HOST}"
     export PGPASSWORD
 
-    local attempt=0
-    local success=false
+    # Простая логика с экспоненциальной задержкой между попытками
+    local attempt=1
+    local delay=5  # начальная задержка в секундах
     
-    while [ $attempt -lt $MAX_RETRIES ] && [ "$success" = false ]; do
-        ((attempt++))
+    while [ $attempt -le $MAX_RETRIES ]; do
         log "🔄 Попытка $attempt/$MAX_RETRIES создания дампа БД..."
         
         if pg_dump -U "$DB_USER" "$DATABASE" -h "$DB_HOST" -p "$DB_PORT" > "$SOURCE_DUMP" 2>>"${DUMP_DIR}/pg_dump_error_mes.log"; then
             local dump_end=$(get_timestamp)
             local dump_dur=$(calculate_duration "$dump_start" "$dump_end")
-            log "✅ Дамп БД успешно создан за $(format_duration "$dump_dur") (попытка $attempt)"
-            log "📊 Размер дампа: $(numfmt --to=iec "$(get_size "$SOURCE_DUMP")")"
-            success=true
-        else
-            log "❌ Ошибка при создании дампа БД (попытка $attempt/$MAX_RETRIES, код $?)"
-            log "⚠️ Подробности в ${DUMP_DIR}/pg_dump_error_mes.log"
+            local dump_size=$(get_size "$SOURCE_DUMP")
             
-            if [ $attempt -lt $MAX_RETRIES ]; then
-                local retry_delay=$((attempt * 10))
-                log "⏳ Повторная попытка через $retry_delay секунд..."
-                sleep $retry_delay
-            fi
+            log "✅ Дамп БД успешно создан за $(format_duration "$dump_dur")"
+            log "📊 Размер дампа: $(numfmt --to=iec "$dump_size")"
+            unset PGPASSWORD
+            return 0
         fi
+        
+        local exit_code=$?
+        log "❌ Ошибка при создании дампа (попытка $attempt/$MAX_RETRIES, код: $exit_code)"
+        
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            log "⏳ Повторная попытка через ${delay} секунд..."
+            sleep $delay
+            delay=$((delay * 2))  # Экспоненциальная задержка
+        fi
+        
+        ((attempt++))
     done
 
-    if [ "$success" = false ]; then
-        local error_msg="*🚫 Ошибка создания дампа БД*
+    # Если все попытки неудачны
+    log "❌ Все $MAX_RETRIES попыток создания дампа завершились ошибкой"
+    log "⚠️ Подробности в ${DUMP_DIR}/pg_dump_error_mes.log"
+    
+    local error_msg="*🚫 Ошибка создания дампа БД*
 *Сервер БД:* \`${DB_HOST}\`
 *БД:* \`${DATABASE}\`
 *Бекап сервер:* \`${HOSTNAME}\`
 *Попыток:* $MAX_RETRIES
-*Статус:* Все попытки создания дампа завершились ошибкой"
-        send_telegram "$error_msg"
-        send_error_telegram "$error_msg"
-        exit 1
-    fi
-
+*Статус:* Все попытки завершились ошибкой"
+    
+    send_telegram "$error_msg"
+    send_error_telegram "$error_msg"
     unset PGPASSWORD
+    exit 1
 }
 
 split_large_file() {
