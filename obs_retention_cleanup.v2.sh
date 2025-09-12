@@ -114,21 +114,28 @@ find_date_folders() {
 
 get_folder_size() {
     local folder_path="$1"
-    local total_size=0
+    local total_size_bytes=0
     
-    # Получаем размер всех объектов в папке
-    obsutil ls "obs://${OBS_BUCKET}/${folder_path}/" -recursive -config="$OBS_CONFIG_FILE" 2>/dev/null | \
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^\[Object\] ]]; then
-            # Парсим строку: [Object] 1048576 2025-09-11/file.txt
-            read -r _ size _ <<< "$line"
-            if [[ "$size" =~ ^[0-9]+$ ]]; then
-                total_size=$((total_size + size))
-            fi
-        fi
-    done
+    # Получаем информацию о каталоге
+    local output=$(obsutil ls "obs://${OBS_BUCKET}/${folder_path}/" -config="$OBS_CONFIG_FILE" 2>/dev/null)
     
-    echo "$total_size"
+    # Ищем строку с общим размером
+    if [[ "$output" =~ Total\ size\ of\ prefix\ .*\ is:\ ([0-9.]+)([KMGT]?B) ]]; then
+        local size_value="${BASH_REMATCH[1]}"
+        local size_unit="${BASH_REMATCH[2]}"
+        
+        # Конвертируем в байты
+        case "$size_unit" in
+            "B")   total_size_bytes=$(echo "$size_value" | awk '{printf "%.0f", $1}') ;;
+            "KB")  total_size_bytes=$(echo "$size_value * 1024" | bc | awk '{printf "%.0f", $1}') ;;
+            "MB")  total_size_bytes=$(echo "$size_value * 1024 * 1024" | bc | awk '{printf "%.0f", $1}') ;;
+            "GB")  total_size_bytes=$(echo "$size_value * 1024 * 1024 * 1024" | bc | awk '{printf "%.0f", $1}') ;;
+            "TB")  total_size_bytes=$(echo "$size_value * 1024 * 1024 * 1024 * 1024" | bc | awk '{printf "%.0f", $1}') ;;
+            *)     total_size_bytes=0 ;;
+        esac
+    fi
+    
+    echo "$total_size_bytes"
 }
 
 confirm_deletion() {
@@ -144,7 +151,7 @@ confirm_deletion() {
     echo ""
     echo "📋 НАЙДЕНО КАТАЛОГОВ ДЛЯ УДАЛЕНИЯ: ${total_count}" >&2
     echo "==================================================================================" >&2
-    echo "№   | Полный путь каталога                            | Размер" >&2
+    echo "№   | Полный путь каталога                               | Размер" >&2
     echo "==================================================================================" >&2
     
     # Выводим список и считаем общий размер
@@ -153,14 +160,19 @@ confirm_deletion() {
         local folder_size=$(get_folder_size "$folder")
         total_size=$((total_size + folder_size))
         
+        # Форматируем размер без запятых (заменяем их на точку для выравнивания)
+        local formatted_size=$(numfmt --to=iec "$folder_size" | sed 's/,/./g')
+        
         printf "%-3d | %-50s | %10s\n" \
             "$((i+1))" \
             "$folder" \
-            "$(numfmt --to=iec "$folder_size")" >&2
+            "$formatted_size" >&2
     done
     
     echo "==================================================================================" >&2
-    echo "📊 ОБЩИЙ РАЗМЕР: $(numfmt --to=iec "$total_size")" >&2
+    # Форматируем общий размер тоже без запятых
+    local formatted_total_size=$(numfmt --to=iec "$total_size" | sed 's/,/./g')
+    echo "📊 ОБЩИЙ РАЗМЕР: $formatted_total_size" >&2
     echo "📅 Будет удалено: ${total_count} каталогов старше ${RETENTION_DAYS} дней" >&2
     echo "" >&2
     
