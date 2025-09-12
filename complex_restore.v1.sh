@@ -59,14 +59,37 @@ download_from_obs() {
     
     log "📥 Загрузка файлов из OBS: obs://${OBS_BUCKET}/${obs_path}"
     
+    # Создаем лог файл для отладки
+    local log_file="${TMP_DIR}/obs_download.log"
+    
+    # Выполняем команду с подробным выводом
+    echo "Команда: obsutil cp \"obs://${OBS_BUCKET}/${obs_path}\" \"$TMP_DIR/\" -config=\"$OBS_CONFIG_FILE\" -r -f" >> "$log_file"
+    
     if obsutil cp "obs://${OBS_BUCKET}/${obs_path}" "$TMP_DIR/" \
-       -config="$OBS_CONFIG_FILE" -r -f >/dev/null 2>&1; then
+       -config="$OBS_CONFIG_FILE" -r -f >> "$log_file" 2>&1; then
         local download_end=$(date +%s)
         local download_dur=$((download_end - download_start))
-        log "✅ Файлы успешно загружены за ${download_dur} секунд"
+        
+        # Проверяем, что файлы действительно загрузились
+        local file_count=$(find "$TMP_DIR" -type f | wc -l)
+        log "✅ Загружено файлов: $file_count за ${download_dur} секунд"
+        
+        if [ "$file_count" -eq 0 ]; then
+            log "❌ Файлы не были загружены (пустая директория)"
+            log "📋 Лог загрузки:"
+            cat "$log_file"
+            return 1
+        fi
+        
         return 0
     else
-        log "❌ Ошибка загрузки файлов из OBS"
+        local exit_code=$?
+        local download_end=$(date +%s)
+        local download_dur=$((download_end - download_start))
+        
+        log "❌ Ошибка загрузки файлов из OBS (код: $exit_code, время: ${download_dur}сек)"
+        log "📋 Лог загрузки:"
+        cat "$log_file"
         return 1
     fi
 }
@@ -80,15 +103,17 @@ combine_parts() {
         return 1
     fi
 
-    log "🔗 Объединение частей файла..."
+    log "🔗 Объединение ${#parts[@]} частей файла..."
     
     # Сортируем файлы по имени для правильного порядка объединения
     local sorted_parts=($(ls "$TMP_DIR"/* | sort))
+    log "📋 Части для объединения: ${sorted_parts[*]}"
     
     cat "${sorted_parts[@]}" > "$output_file"
     
     if [ $? -eq 0 ]; then
-        log "✅ Файлы успешно объединены: $(basename "$output_file")"
+        local output_size=$(du -h "$output_file" | cut -f1)
+        log "✅ Файлы успешно объединены: $(basename "$output_file") (размер: $output_size)"
         return 0
     else
         log "❌ Ошибка объединения файлов"
@@ -106,13 +131,16 @@ decrypt_file() {
     if openssl enc -aes-256-cbc -d -pbkdf2 \
         -in "$encrypted_file" \
         -out "$decrypted_file" \
-        -pass file:"$KEYFILE" 2>/dev/null; then
+        -pass file:"$KEYFILE" 2>"${TMP_DIR}/decrypt.log"; then
         local decrypt_end=$(date +%s)
         local decrypt_dur=$((decrypt_end - decrypt_start))
-        log "✅ Файл успешно дешифрован за ${decrypt_dur} секунд"
+        local decrypted_size=$(du -h "$decrypted_file" | cut -f1)
+        log "✅ Файл успешно дешифрован за ${decrypt_dur} секунд (размер: $decrypted_size)"
         return 0
     else
         log "❌ Ошибка дешифрования файла"
+        log "📋 Лог дешифрования:"
+        cat "${TMP_DIR}/decrypt.log"
         return 1
     fi
 }
@@ -124,13 +152,16 @@ decompress_file() {
     
     log "📦 Распаковка файла: $(basename "$compressed_file")"
     
-    if pigz -d -c "$compressed_file" > "$output_file" 2>/dev/null; then
+    if pigz -d -c "$compressed_file" > "$output_file" 2>"${TMP_DIR}/decompress.log"; then
         local decompress_end=$(date +%s)
         local decompress_dur=$((decompress_end - decompress_start))
-        log "✅ Файл успешно распакован за ${decompress_dur} секунд"
+        local output_size=$(du -h "$output_file" | cut -f1)
+        log "✅ Файл успешно распакован за ${decompress_dur} секунд (размер: $output_size)"
         return 0
     else
         log "❌ Ошибка распаковки файла"
+        log "📋 Лог распаковки:"
+        cat "${TMP_DIR}/decompress.log"
         return 1
     fi
 }
@@ -178,13 +209,33 @@ main() {
     log "=== НАЧАЛО ВОССТАНОВЛЕНИЯ ==="
     log "📁 OBS путь: ${OBS_PATH}"
     log "📂 Директория восстановления: ${RESTORE_DIR}"
+    log "🔑 Ключ шифрования: ${KEYFILE}"
+    log "📦 OBS бакет: ${OBS_BUCKET}"
     
+    # Проверяем существование ключа шифрования
+    if [ ! -f "$KEYFILE" ]; then
+        log "❌ Файл ключа шифрования не найден: $KEYFILE"
+        exit 1
+    fi
+    
+    # Проверяем существование конфига obsutil
+    if [ ! -f "$OBS_CONFIG_FILE" ]; then
+        log "❌ Конфигурационный файл obsutil не найден: $OBS_CONFIG_FILE"
+        exit 1
+    fi
+
     # 1. Загрузка из OBS
     if ! download_from_obs "$OBS_PATH"; then
         log "❌ Не удалось загрузить файлы из OBS"
         cleanup
         exit 1
     fi
+    
+    # Показываем список загруженных файлов
+    log "📋 Загруженные файлы:"
+    ls -la "$TMP_DIR/" | while read -r line; do
+        log "   $line"
+    done
     
     # Проверяем, есть ли части файла или один файл
     local files=("$TMP_DIR"/*)
@@ -200,6 +251,7 @@ main() {
     else
         # Если один файл
         encrypted_file="${files[0]}"
+        log "ℹ️ Используется единственный файл: $(basename "$encrypted_file")"
     fi
     
     # 2. Дешифрование
